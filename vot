@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+validate_url() {
+    local url="$1"
+    # Простая проверка URL
+    if [[ "$url" =~ ^https?:// ]]; then
+        return 0
+    else
+        echo "Ошибка: '$url' не похож на валидный URL (должен начинаться с http://или https://)"
+        return 1
+    fi
+}
+
+# "--voice-style tts" "--voice-style=tts"
+VOICE_PARAM="--voice-style"
+VOICE_VALUE=""
+MPV_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        # Вариант 1: --voice-style=value
+        ${VOICE_PARAM}=*)
+            VOICE_VALUE="${1#*=}"
+            shift
+            ;;
+        # Вариант 2: --voice-style value
+        ${VOICE_PARAM})
+            if [[ $# -ge 2 ]]; then
+                VOICE_VALUE="$2"
+                shift 2
+            else
+                echo "Ошибка: $VOICE_PARAM требует аргумент"
+                exit 1
+            fi
+            ;;
+        --url=*)
+            URL_VALUE="${1#*=}"
+            if ! validate_url "$URL_VALUE"; then
+                exit 1
+            fi
+            shift
+            ;;
+        --url)
+            if [[ $# -ge 2 ]]; then
+                if validate_url "$2"; then
+                    URL_VALUE="$2"
+                    shift 2
+                else
+                    exit 1
+                fi
+            else
+                echo "Ошибка: --url требует аргумент"
+                exit 1
+            fi
+            ;;
+        
+        # Все остальное для mpv
+        *)
+            MPV_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+ 
+#debug
+VOT_AUDIO=$(vot-cli-live "${URL_VALUE%%&*}" ${VOICE_PARAM}=${VOICE_VALUE:-live} | tee >(cat >&2) | sed -n '/Audio Link/s/.*"\([^"]*\)".*/\1/p')
+#VOT_AUDIO=$(vot-cli-live "${URL_VALUE%%&*}" $VOICE_PARAM=$VOICE_VALUE | sed -n '/Audio Link/s/.*"\([^"]*\)".*/\1/p')
+
+
+[[ "$VOT_AUDIO" =~ ^https?:// ]] && mpv "${URL_VALUE%%&*}" --external-file="$VOT_AUDIO" --lavfi-complex='[aid1]volume=0.5[vol1];[aid2]volume=3dB[vol2];[vol1][vol2]amix[ao]' ${MPV_ARGS[@]}

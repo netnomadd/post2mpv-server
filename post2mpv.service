@@ -1,0 +1,24 @@
+[Unit]
+Description=post2mpv HTTP server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/post2mpv
+Restart=on-failure
+RestartSec=5
+
+# Токен авторизации
+# Environment=POST2MPV_TOKEN=your_secret_token
+
+# Доступ к дисплею для mpv (Wayland/X11)
+Environment=DISPLAY=:0
+# Environment=WAYLAND_DISPLAY=wayland-0
+
+# Логирование через journald (journalctl --user -u post2mpv)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=post2mpv
+
+[Install]
+WantedBy=default.target

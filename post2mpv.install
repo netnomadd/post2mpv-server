@@ -1,0 +1,26 @@
+post_install() {
+    echo ""
+    echo "==> post2mpv установлен."
+    echo ""
+    echo "  Перед запуском задайте токен авторизации:"
+    echo "    mkdir -p ~/.config/post2mpv"
+    echo "    echo 'POST2MPV_TOKEN=ваш_токен' > ~/.config/post2mpv/post2mpv.conf"
+    echo ""
+    echo "  Настройте доступ к дисплею (X11 или Wayland):"
+    echo "    systemctl --user edit post2mpv"
+    echo "  Добавьте в секцию [Service]:"
+    echo "    Environment=DISPLAY=:0                      # X11"
+    echo "    Environment=WAYLAND_DISPLAY=wayland-0       # Wayland"
+    echo "    Environment=XDG_RUNTIME_DIR=/run/user/\$(id -u)"
+    echo ""
+    echo "  Включить и запустить:"
+    echo "    systemctl --user enable --now post2mpv"
+    echo ""
+    echo "  Для автозапуска без графического сеанса:"
+    echo "    loginctl enable-linger"
+    echo ""
+}
+
+post_upgrade() {
+    post_install
+}
