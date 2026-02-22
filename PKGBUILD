@@ -1,5 +1,5 @@
 # Maintainer: your name <your@email.com>
-pkgname=post2mpv-server
+pkgname=post2mpv-server-git
 pkgver=1.0.0
 pkgrel=1
 pkgdesc="HTTP server for mpv/peerflix/yt-dlp control"
@@ -18,14 +18,14 @@ source=("$pkgname::git+$url")
 sha256sums=('SKIP')
 
 build() {
-    cd "$pkgname-$pkgver"
+    cd "$pkgname"
     export CGO_ENABLED=0
     export GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw"
     go build -ldflags "-linkmode=external -extldflags $LDFLAGS" -o post2mpv .
 }
 
 package() {
-    cd "$pkgname-$pkgver"
+    cd "$pkgname"
 
     install -Dm755 post2mpv         "$pkgdir/usr/bin/post2mpv"
     install -Dm755 vot              "$pkgdir/usr/bin/vot"
