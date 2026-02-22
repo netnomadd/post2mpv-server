@@ -13,7 +13,7 @@ optdepends=(
     'vot-cli-live: for translate action'
 )
 makedepends=('go')
-install="$pkgname.install"
+install="post2mpv-server.install"
 source=("$pkgname::git+$url")
 sha256sums=('SKIP')
 
