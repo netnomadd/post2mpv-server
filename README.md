@@ -112,9 +112,7 @@ Environment=DISPLAY=:0
 **Wayland:**
 ```ini
 Environment=WAYLAND_DISPLAY=wayland-0
-Environment=XDG_RUNTIME_DIR=/run/user/1000
 ```
-Замените `1000` на свой UID (`id -u`).
 
 **Определить текущее окружение:**
 ```bash

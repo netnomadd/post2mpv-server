@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/post2mpv
+ExecStart=/usr/bin/post2mpv --public
 Restart=on-failure
 RestartSec=5
 
@@ -12,8 +12,8 @@ RestartSec=5
 # Environment=POST2MPV_TOKEN=your_secret_token
 
 # Доступ к дисплею для mpv (Wayland/X11)
-Environment=DISPLAY=:0
-# Environment=WAYLAND_DISPLAY=wayland-0
+#Environment=DISPLAY=:0
+Environment=WAYLAND_DISPLAY=wayland-0
 
 # Логирование через journald (journalctl --user -u post2mpv)
 StandardOutput=journal
