@@ -19,9 +19,7 @@ sha256sums=('SKIP')
 
 build() {
     cd "$pkgname"
-    export CGO_ENABLED=0
-    export GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw"
-    go build -ldflags "-linkmode=external -extldflags $LDFLAGS" -o post2mpv .
+    go build -o post2mpv .
 }
 
 package() {
