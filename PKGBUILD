@@ -14,7 +14,7 @@ optdepends=(
 )
 makedepends=('go')
 install="$pkgname.install"
-source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+source=("$pkgname::git+$url")
 sha256sums=('SKIP')
 
 build() {
