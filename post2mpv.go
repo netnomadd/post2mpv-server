@@ -56,6 +56,14 @@ type ProcessInfo struct {
 	ID      string
 	Cmd     *exec.Cmd
 	Started time.Time
+	Action  string
+	URL     string
+}
+
+type jobMeta struct {
+	Action string
+	URL    string
+	Params []string
 }
 
 type RequestPayload struct {
@@ -367,29 +375,31 @@ func handleRequest(expectedToken string) http.HandlerFunc {
 			params = payload.Args
 		}
 
-		log.Printf("Received action=%s url=%s from %s", payload.Action, payload.URL, r.RemoteAddr)
+		log.Printf("Received action=%s url=%s params=%q from %s", payload.Action, payload.URL, params, r.RemoteAddr)
+
+		meta := jobMeta{Action: payload.Action, URL: payload.URL, Params: params}
 
 		var jobID string
 		var respStatus int
 
 		switch payload.Action {
-			case "play":
-				jobID = handlePlay(payload.URL, params)
-				respStatus = http.StatusOK
-			case "download":
-				jobID = handleDownload(payload.URL, params, payload.Output)
-				respStatus = http.StatusOK
-			case "translate":
-				jobID = handleTranslate(payload.URL, params)
-				respStatus = http.StatusOK
-			default:
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusBadRequest)
-				json.NewEncoder(w).Encode(ResponsePayload{
-					Status: "error",
-					Detail: fmt.Sprintf("unknown action: %s", payload.Action),
-				})
-				return
+		case "play":
+			jobID = handlePlay(meta)
+			respStatus = http.StatusOK
+		case "download":
+			jobID = handleDownload(meta, payload.Output)
+			respStatus = http.StatusOK
+		case "translate":
+			jobID = handleTranslate(meta)
+			respStatus = http.StatusOK
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ResponsePayload{
+				Status: "error",
+				Detail: fmt.Sprintf("unknown action: %s", payload.Action),
+			})
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -402,97 +412,135 @@ func handleRequest(expectedToken string) http.HandlerFunc {
 	}
 }
 
-func handlePlay(url string, params []string) string {
+func handlePlay(meta jobMeta) string {
 	var cmd *exec.Cmd
 
-	if strings.HasPrefix(url, "magnet:") || strings.HasSuffix(url, ".torrent") {
-		// peerflix для торрентов
-		args := append([]string{url, "--"}, params...)
+	if strings.HasPrefix(meta.URL, "magnet:") || strings.HasSuffix(meta.URL, ".torrent") {
+		args := append([]string{meta.URL, "--"}, meta.Params...)
 		cmd = exec.Command("peerflix", args...)
 	} else {
-		// mpv для прямых ссылок
-		args := append([]string{"--no-terminal"}, params...)
-		args = append(args, "--", url)
+		// --msg-level: ошибки ytdl/mpv видны в journal даже с --no-terminal
+		args := append([]string{
+			"--no-terminal",
+			"--msg-level=cplayer=warn,ytdl_hook=status,ffmpeg=error,statusline=no",
+		}, meta.Params...)
+		args = append(args, "--", meta.URL)
 		cmd = exec.Command("mpv", args...)
 	}
 
-	return spawnAndTrack(cmd)
+	return spawnAndTrack(cmd, meta)
 }
 
-func handleDownload(url string, params []string, output string) string {
-	args := []string{url, "-i"}
+func handleDownload(meta jobMeta, output string) string {
+	args := []string{meta.URL, "-i"}
 	if output != "" {
 		args = append(args, "-o", output)
 	}
-	args = append(args, params...)
+	args = append(args, meta.Params...)
 
 	cmd := exec.Command("yt-dlp", args...)
-	return spawnAndTrack(cmd)
+	return spawnAndTrack(cmd, meta)
 }
 
-func handleTranslate(url string, params []string) string {
-	args := append([]string{"--url", url}, params...)
+func handleTranslate(meta jobMeta) string {
+	args := append([]string{"--url", meta.URL}, meta.Params...)
 	cmd := exec.Command("vot", args...)
-	return spawnAndTrack(cmd)
+	return spawnAndTrack(cmd, meta)
 }
 
-// pipeToLog читает строки из r и пишет их в лог с префиксом job_id и потоком (stdout/stderr)
-func pipeToLog(r io.Reader, jobID, stream string) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		log.Printf("[%s] %s: %s", jobID, stream, scanner.Text())
+// lineLogWriter пишет вывод дочернего процесса в journal построчно с job_id.
+type lineLogWriter struct {
+	jobID  string
+	stream string
+	buf    []byte
+}
+
+func (w *lineLogWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := -1
+		for j, b := range w.buf {
+			if b == '\n' || b == '\r' {
+				i = j
+				break
+			}
+		}
+		if i < 0 {
+			break
+		}
+		line := string(w.buf[:i])
+		// пропускаем lone \r/\n и пустые статус-строки mpv
+		if line != "" {
+			log.Printf("job_id=%s %s: %s", w.jobID, w.stream, line)
+		}
+		w.buf = w.buf[i+1:]
 	}
+	// не раздувать буфер от бесконечных \r-статус-лайнов без \n
+	if len(w.buf) > 64*1024 {
+		log.Printf("job_id=%s %s: %s", w.jobID, w.stream, string(w.buf))
+		w.buf = w.buf[:0]
+	}
+	return len(p), nil
 }
 
-func spawnAndTrack(cmd *exec.Cmd) string {
+func (w *lineLogWriter) Flush() {
+	if line := strings.TrimRight(string(w.buf), "\r\n"); line != "" {
+		log.Printf("job_id=%s %s: %s", w.jobID, w.stream, line)
+	}
+	w.buf = nil
+}
+
+func spawnAndTrack(cmd *exec.Cmd, meta jobMeta) string {
 	jobID := uuid.New().String()
+	started := time.Now()
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{}
-
-	// На Unix: создаём новую сессию для контроля группы процессов
 	if os.Getenv("GOOS") != "windows" {
 		cmd.SysProcAttr.Setsid = true
 	}
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		log.Printf("Failed to create stdout pipe: %v", err)
-		return ""
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		log.Printf("Failed to create stderr pipe: %v", err)
-		return ""
-	}
+	stdoutW := &lineLogWriter{jobID: jobID, stream: "stdout"}
+	stderrW := &lineLogWriter{jobID: jobID, stream: "stderr"}
+	cmd.Stdout = stdoutW
+	cmd.Stderr = stderrW
+
+	log.Printf("job_id=%s action=%s url=%s cmd=%q",
+		jobID, meta.Action, meta.URL, strings.Join(cmd.Args, " "))
 
 	if err := cmd.Start(); err != nil {
-		log.Printf("Failed to start process: %v", err)
+		log.Printf("job_id=%s failed to start: %v", jobID, err)
 		return ""
 	}
 
 	procInfo := &ProcessInfo{
 		ID:      jobID,
 		Cmd:     cmd,
-		Started: time.Now(),
+		Started: started,
+		Action:  meta.Action,
+		URL:     meta.URL,
 	}
 
 	pm.mu.Lock()
 	pm.procs[jobID] = procInfo
 	pm.mu.Unlock()
 
-	log.Printf("Started process pid=%d job_id=%s", cmd.Process.Pid, jobID)
+	log.Printf("job_id=%s started pid=%d", jobID, cmd.Process.Pid)
 
-	go pipeToLog(stdoutPipe, jobID, "stdout")
-	go pipeToLog(stderrPipe, jobID, "stderr")
-
-	// Отслеживание завершения процесса в отдельной горутине
 	go func() {
 		err := cmd.Wait()
+		stdoutW.Flush()
+		stderrW.Flush()
+
 		exitCode := -1
+		errMsg := ""
 		if err != nil {
+			errMsg = err.Error()
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
 					exitCode = status.ExitStatus()
+					if status.Signaled() {
+						errMsg = fmt.Sprintf("signal %s", status.Signal())
+					}
 				}
 			}
 		} else {
@@ -503,7 +551,9 @@ func spawnAndTrack(cmd *exec.Cmd) string {
 		delete(pm.procs, jobID)
 		pm.mu.Unlock()
 
-		log.Printf("Process finished pid=%d job_id=%s exit_code=%d", cmd.Process.Pid, jobID, exitCode)
+		log.Printf("job_id=%s finished pid=%d action=%s url=%s exit_code=%d duration=%s err=%q",
+			jobID, cmd.Process.Pid, meta.Action, meta.URL, exitCode,
+			time.Since(started).Round(time.Millisecond), errMsg)
 	}()
 
 	return jobID
