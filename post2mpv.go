@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
 	"github.com/google/uuid"
 )
 
@@ -412,6 +413,20 @@ func handleRequest(expectedToken string) http.HandlerFunc {
 	}
 }
 
+func filterParams(params []string, drop map[string]bool) []string {
+	if len(params) == 0 || len(drop) == 0 {
+		return params
+	}
+	out := make([]string, 0, len(params))
+	for _, p := range params {
+		if drop[p] {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 func handlePlay(meta jobMeta) string {
 	var cmd *exec.Cmd
 
@@ -419,12 +434,9 @@ func handlePlay(meta jobMeta) string {
 		args := append([]string{meta.URL, "--"}, meta.Params...)
 		cmd = exec.Command("peerflix", args...)
 	} else {
-		// --msg-level: ошибки ytdl/mpv видны в journal даже с --no-terminal
-		args := append([]string{
-			"--no-terminal",
-			"--msg-level=cplayer=warn,ytdl_hook=status,ffmpeg=error,statusline=no",
-		}, meta.Params...)
-		args = append(args, "--", meta.URL)
+		// без --no-terminal: сообщения mpv идут в stderr → journal
+		params := filterParams(meta.Params, map[string]bool{"--no-terminal": true, "--no-tty": true})
+		args := append(append([]string{}, params...), "--", meta.URL)
 		cmd = exec.Command("mpv", args...)
 	}
 
