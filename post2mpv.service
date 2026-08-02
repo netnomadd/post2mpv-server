@@ -1,6 +1,8 @@
 [Unit]
 Description=post2mpv HTTP server
-After=network.target
+Documentation=https://github.com/netnomadd/post2mpv-server
+After=graphical-session.target
+PartOf=graphical-session.target
 
 [Service]
 Type=simple
@@ -8,17 +10,21 @@ ExecStart=/usr/bin/post2mpv --public
 Restart=on-failure
 RestartSec=5
 
-# Токен авторизации
+# Пути пользователя: mpv читает $XDG_CONFIG_HOME/mpv/mpv.conf
+Environment=HOME=%h
+Environment=XDG_CONFIG_HOME=%h/.config
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+
+# Переменные графической сессии из окружения user-manager
+# (импортируются DE при логине; без них mpv часто стартует «не как из терминала»)
+PassEnvironment=DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_SESSION_TYPE DBUS_SESSION_BUS_ADDRESS
+
+# Токен лучше задавать в ~/.config/post2mpv/post2mpv.conf
 # Environment=POST2MPV_TOKEN=your_secret_token
 
-# Доступ к дисплею для mpv (Wayland/X11)
-#Environment=DISPLAY=:0
-Environment=WAYLAND_DISPLAY=wayland-0
-
-# Логирование через journald (journalctl --user -u post2mpv)
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=post2mpv
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
