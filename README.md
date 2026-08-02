@@ -43,6 +43,7 @@ POST2MPV_TOKEN=mysecret ./post2mpv
 | `--token` | — | Токен авторизации |
 | `--public` | `false` | Привязать к `0.0.0.0` |
 | `--config` | — | Путь к файлу конфигурации |
+| `--mpv-log` | `false` | Писать вывод mpv/дочерних процессов в journal по умолчанию |
 
 ### Конфигурационный файл
 
@@ -52,6 +53,7 @@ POST2MPV_TOKEN=mysecret ./post2mpv
 POST2MPV_TOKEN=your_secret_token
 POST2MPV_HOST=127.0.0.1
 POST2MPV_PORT=7531
+POST2MPV_MPV_LOG=0
 ```
 
 Стандартные пути (проверяются автоматически):
@@ -141,7 +143,8 @@ X-POST2MPV-TOKEN: <token>   # если токен задан
 {
   "url": "https://example.com/video.mp4",
   "action": "play",
-  "params": ["--volume=50"]
+  "params": ["--volume=50"],
+  "log": true
 }
 ```
 
@@ -151,6 +154,7 @@ X-POST2MPV-TOKEN: <token>   # если токен задан
 | `action` | нет | `play` (по умолчанию), `download`, `translate` |
 | `params` | нет | Дополнительные аргументы для команды |
 | `output` | нет | Путь вывода для `download` (`-o` в yt-dlp) |
+| `log` | нет | Вывод mpv/процесса в journal (`true`/`false`). По умолчанию выкл; override на запрос. Глобально: `--mpv-log` / `POST2MPV_MPV_LOG` |
 
 **Ответ:**
 ```json
@@ -177,6 +181,12 @@ curl -X POST http://localhost:7531 \
   -H 'Content-Type: application/json' \
   -H 'X-POST2MPV-TOKEN: mysecret' \
   -d '{"url": "https://youtu.be/dQw4w9WgXcQ", "action": "play"}'
+
+# То же с дампом лога mpv в journal
+curl -X POST http://localhost:7531 \
+  -H 'Content-Type: application/json' \
+  -H 'X-POST2MPV-TOKEN: mysecret' \
+  -d '{"url": "https://youtu.be/dQw4w9WgXcQ", "action": "play", "log": true}'
 
 # Скачать с указанием пути
 curl -X POST http://localhost:7531 \

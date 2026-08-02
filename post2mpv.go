@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,11 +22,11 @@ import (
 )
 
 const (
-	DEFAULT_HOST   = "127.0.0.1"
-	DEFAULT_PORT   = 7531
-	TOKEN_HEADER   = "X-POST2MPV-TOKEN"
+	DEFAULT_HOST     = "127.0.0.1"
+	DEFAULT_PORT     = 7531
+	TOKEN_HEADER     = "X-POST2MPV-TOKEN"
 	SHUTDOWN_TIMEOUT = 10 * time.Second
-	VERSION = "1.0.0"
+	VERSION          = "1.0.0"
 )
 
 var (
@@ -34,6 +35,7 @@ var (
 	token      = flag.String("token", "", "shared token for authorization")
 	configFile = flag.String("config", "", "configuration file path")
 	public     = flag.Bool("public", false, "bind to 0.0.0.0 (dangerous without token)")
+	mpvLogFlag = flag.Bool("mpv-log", false, "log mpv/child process output to journal by default")
 )
 
 // logWriter форматирует дату как dd.mm.yyyy hh:mm:ss
@@ -62,9 +64,10 @@ type ProcessInfo struct {
 }
 
 type jobMeta struct {
-	Action string
-	URL    string
-	Params []string
+	Action     string
+	URL        string
+	Params     []string
+	CaptureLog bool
 }
 
 type RequestPayload struct {
@@ -73,6 +76,8 @@ type RequestPayload struct {
 	Params []string `json:"params"`
 	Args   []string `json:"args"`
 	Output string   `json:"output"`
+	// Log: nil = взять default (флаг/конфиг/env), иначе явный override на запрос
+	Log *bool `json:"log"`
 }
 
 type ResponsePayload struct {
@@ -105,6 +110,7 @@ func printUsage() {
 	POST2MPV_TOKEN=your_token
 	POST2MPV_HOST=127.0.0.1
 	POST2MPV_PORT=7531
+	POST2MPV_MPV_LOG=0
 
 	Default config locations:
 	/etc/post2mpv/post2mpv.conf
@@ -116,7 +122,8 @@ func printUsage() {
 	"url": "https://example.com/video.mp4",
 	"action": "play|download|translate",
 	"params": ["--option"],
-	"output": "/path/to/file"
+	"output": "/path/to/file",
+	"log": true
 }
 
 Authentication:
@@ -171,6 +178,16 @@ func main() {
 		}
 	}
 
+	// Лог вывода mpv/дочерних процессов: флаг > конфиг > env > false
+	defaultCaptureLog := *mpvLogFlag
+	if !defaultCaptureLog {
+		if v, ok := config["POST2MPV_MPV_LOG"]; ok {
+			defaultCaptureLog = parseBool(v)
+		} else {
+			defaultCaptureLog = parseBool(os.Getenv("POST2MPV_MPV_LOG"))
+		}
+	}
+
 	bindHost := effectiveHost
 	if *public {
 		bindHost = "0.0.0.0"
@@ -181,7 +198,9 @@ func main() {
 	}
 
 	addr := fmt.Sprintf("%s:%d", bindHost, effectivePort)
-	log.Printf("post2mpv %s listening on %s (token %s)", VERSION, addr, map[bool]string{true: "set", false: "not set"}[effectiveToken != ""])
+	log.Printf("post2mpv %s listening on %s (token %s, mpv_log %s)", VERSION, addr,
+		map[bool]string{true: "set", false: "not set"}[effectiveToken != ""],
+		map[bool]string{true: "on", false: "off"}[defaultCaptureLog])
 
 	// Обработчики сигналов
 	sigChan := make(chan os.Signal, 1)
@@ -189,7 +208,7 @@ func main() {
 
 	// HTTP сервер
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", handleRequest(effectiveToken))
+	mux.HandleFunc("/", handleRequest(effectiveToken, defaultCaptureLog))
 
 	server := &http.Server{
 		Addr:         addr,
@@ -285,7 +304,16 @@ func loadConfig(configPath string) map[string]string {
 	return config
 }
 
-func handleRequest(expectedToken string) http.HandlerFunc {
+func parseBool(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func handleRequest(expectedToken string, defaultCaptureLog bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// CORS headers
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -376,9 +404,20 @@ func handleRequest(expectedToken string) http.HandlerFunc {
 			params = payload.Args
 		}
 
-		log.Printf("Received action=%s url=%s params=%q from %s", payload.Action, payload.URL, params, r.RemoteAddr)
+		captureLog := defaultCaptureLog
+		if payload.Log != nil {
+			captureLog = *payload.Log
+		}
 
-		meta := jobMeta{Action: payload.Action, URL: payload.URL, Params: params}
+		log.Printf("Received action=%s url=%s params=%q log=%v from %s",
+			payload.Action, payload.URL, params, captureLog, r.RemoteAddr)
+
+		meta := jobMeta{
+			Action:     payload.Action,
+			URL:        payload.URL,
+			Params:     params,
+			CaptureLog: captureLog,
+		}
 
 		var jobID string
 		var respStatus int
@@ -413,20 +452,6 @@ func handleRequest(expectedToken string) http.HandlerFunc {
 	}
 }
 
-func filterParams(params []string, drop map[string]bool) []string {
-	if len(params) == 0 || len(drop) == 0 {
-		return params
-	}
-	out := make([]string, 0, len(params))
-	for _, p := range params {
-		if drop[p] {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
-}
-
 func handlePlay(meta jobMeta) string {
 	var cmd *exec.Cmd
 
@@ -434,9 +459,8 @@ func handlePlay(meta jobMeta) string {
 		args := append([]string{meta.URL, "--"}, meta.Params...)
 		cmd = exec.Command("peerflix", args...)
 	} else {
-		// без --no-terminal: сообщения mpv идут в stderr → journal
-		params := filterParams(meta.Params, map[string]bool{"--no-terminal": true, "--no-tty": true})
-		args := append(append([]string{}, params...), "--", meta.URL)
+		args := append([]string{"--no-terminal"}, meta.Params...)
+		args = append(args, "--", meta.URL)
 		cmd = exec.Command("mpv", args...)
 	}
 
@@ -460,6 +484,13 @@ func handleTranslate(meta jobMeta) string {
 	return spawnAndTrack(cmd, meta)
 }
 
+func isMpvCommand(cmd *exec.Cmd) bool {
+	if len(cmd.Args) > 0 && filepath.Base(cmd.Args[0]) == "mpv" {
+		return true
+	}
+	return filepath.Base(cmd.Path) == "mpv"
+}
+
 // lineLogWriter пишет вывод дочернего процесса в journal построчно с job_id.
 type lineLogWriter struct {
 	jobID  string
@@ -481,13 +512,11 @@ func (w *lineLogWriter) Write(p []byte) (int, error) {
 			break
 		}
 		line := string(w.buf[:i])
-		// пропускаем lone \r/\n и пустые статус-строки mpv
 		if line != "" {
 			log.Printf("job_id=%s %s: %s", w.jobID, w.stream, line)
 		}
 		w.buf = w.buf[i+1:]
 	}
-	// не раздувать буфер от бесконечных \r-статус-лайнов без \n
 	if len(w.buf) > 64*1024 {
 		log.Printf("job_id=%s %s: %s", w.jobID, w.stream, string(w.buf))
 		w.buf = w.buf[:0]
@@ -502,6 +531,45 @@ func (w *lineLogWriter) Flush() {
 	w.buf = nil
 }
 
+// dumpMpvLog: при ошибке — хвост лога; при успехе — warn/error.
+func dumpMpvLog(jobID, logPath string, exitCode int) {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("job_id=%s mpv-log: failed to read %s: %v", jobID, logPath, err)
+		}
+		return
+	}
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+
+	if exitCode != 0 {
+		const maxTail = 200
+		start := 0
+		if len(lines) > maxTail {
+			start = len(lines) - maxTail
+			log.Printf("job_id=%s mpv-log: last %d/%d lines", jobID, maxTail, len(lines))
+		} else {
+			log.Printf("job_id=%s mpv-log: %d lines", jobID, len(lines))
+		}
+		for _, line := range lines[start:] {
+			if line != "" {
+				log.Printf("job_id=%s mpv: %s", jobID, line)
+			}
+		}
+		return
+	}
+
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "][e]") || strings.Contains(line, "][f]") ||
+			strings.Contains(line, "][w]") || strings.Contains(line, "Unknown profile") {
+			log.Printf("job_id=%s mpv: %s", jobID, line)
+		}
+	}
+}
+
 func spawnAndTrack(cmd *exec.Cmd, meta jobMeta) string {
 	jobID := uuid.New().String()
 	started := time.Now()
@@ -511,16 +579,36 @@ func spawnAndTrack(cmd *exec.Cmd, meta jobMeta) string {
 		cmd.SysProcAttr.Setsid = true
 	}
 
-	stdoutW := &lineLogWriter{jobID: jobID, stream: "stdout"}
-	stderrW := &lineLogWriter{jobID: jobID, stream: "stderr"}
-	cmd.Stdout = stdoutW
-	cmd.Stderr = stderrW
+	mpvLogPath := ""
+	var stdoutW, stderrW *lineLogWriter
 
-	log.Printf("job_id=%s action=%s url=%s cmd=%q",
-		jobID, meta.Action, meta.URL, strings.Join(cmd.Args, " "))
+	if meta.CaptureLog && isMpvCommand(cmd) && len(cmd.Args) > 0 {
+		// --no-terminal глушит stderr; надёжный путь — --log-file
+		mpvLogPath = filepath.Join(os.TempDir(), "post2mpv-"+jobID+".log")
+		args := make([]string, 0, len(cmd.Args)+1)
+		args = append(args, cmd.Args[0], "--log-file="+mpvLogPath)
+		args = append(args, cmd.Args[1:]...)
+		cmd.Args = args
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+	} else if meta.CaptureLog {
+		stdoutW = &lineLogWriter{jobID: jobID, stream: "stdout"}
+		stderrW = &lineLogWriter{jobID: jobID, stream: "stderr"}
+		cmd.Stdout = stdoutW
+		cmd.Stderr = stderrW
+	} else {
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+	}
+
+	log.Printf("job_id=%s action=%s url=%s log=%v cmd=%q",
+		jobID, meta.Action, meta.URL, meta.CaptureLog, strings.Join(cmd.Args, " "))
 
 	if err := cmd.Start(); err != nil {
 		log.Printf("job_id=%s failed to start: %v", jobID, err)
+		if mpvLogPath != "" {
+			os.Remove(mpvLogPath)
+		}
 		return ""
 	}
 
@@ -540,8 +628,12 @@ func spawnAndTrack(cmd *exec.Cmd, meta jobMeta) string {
 
 	go func() {
 		err := cmd.Wait()
-		stdoutW.Flush()
-		stderrW.Flush()
+		if stdoutW != nil {
+			stdoutW.Flush()
+		}
+		if stderrW != nil {
+			stderrW.Flush()
+		}
 
 		exitCode := -1
 		errMsg := ""
@@ -557,6 +649,11 @@ func spawnAndTrack(cmd *exec.Cmd, meta jobMeta) string {
 			}
 		} else {
 			exitCode = 0
+		}
+
+		if mpvLogPath != "" {
+			dumpMpvLog(jobID, mpvLogPath, exitCode)
+			os.Remove(mpvLogPath)
 		}
 
 		pm.mu.Lock()
