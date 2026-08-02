@@ -135,7 +135,8 @@ fi
 
 VIDEO_URL="${URL_VALUE%%#*}"
 
-VOT_ARGS=(--silent translate --voice-style="$VOICE_STYLE" --response-lang="$RESPONSE_LANG")
+# Global flags belong after the subcommand (vot parses os.Args[1] as the command).
+VOT_ARGS=(translate --silent --voice-style="$VOICE_STYLE" --response-lang="$RESPONSE_LANG")
 if [[ -n "$REQUEST_LANG" ]]; then
 	VOT_ARGS+=(--request-lang="$REQUEST_LANG")
 fi
