@@ -10,7 +10,7 @@ depends=('mpv')
 optdepends=(
     'yt-dlp: for download action'
     'peerflix: for torrent playback'
-    'vot-cli-live: for translate action'
+    'vot-cli-go: for translate action (provides vot binary used by vot2mpv)'
 )
 makedepends=('go' 'git')
 install="post2mpv-server.install"
@@ -39,6 +39,6 @@ package() {
     cd "$pkgname"
 
     install -Dm755 post2mpv         "$pkgdir/usr/bin/post2mpv"
-    install -Dm755 vot              "$pkgdir/usr/bin/vot"
+    install -Dm755 vot2mpv          "$pkgdir/usr/bin/vot2mpv"
     install -Dm644 post2mpv.service "$pkgdir/usr/lib/systemd/user/post2mpv.service"
 }

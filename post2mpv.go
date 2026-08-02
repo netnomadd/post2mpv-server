@@ -480,7 +480,7 @@ func handleDownload(meta jobMeta, output string) string {
 
 func handleTranslate(meta jobMeta) string {
 	args := append([]string{"--url", meta.URL}, meta.Params...)
-	cmd := exec.Command("vot", args...)
+	cmd := exec.Command("vot2mpv", args...)
 	return spawnAndTrack(cmd, meta)
 }
 

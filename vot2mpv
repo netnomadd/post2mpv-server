@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# vot2mpv — перевод через vot-cli-go и воспроизведение в mpv
+# с внешней аудиодорожкой (оригинал + перевод).
+#
+# Вызывается post2mpv (action=translate).
+# Не путать с бинарником CLI `vot` из vot-cli-go.
+#
+# Зависимости: vot (vot-cli-go) и mpv в PATH.
+# Переопределение CLI: VOT_CLI=/path/to/vot
+
+set -euo pipefail
+
+VOT_CLI="${VOT_CLI:-vot}"
+VOICE_STYLE="live"
+RESPONSE_LANG="ru"
+REQUEST_LANG=""
+BACKEND=""
+URL_VALUE=""
+MPV_ARGS=()
+
+usage() {
+	cat <<'EOF'
+usage: vot2mpv --url <video-url> [options] [-- mpv-args...]
+
+options:
+  --url URL                 video URL (required)
+  --voice-style live|tts    voice style (default: live)
+  --response-lang LANG      target lang for vot (default: ru)
+  --request-lang LANG       source lang (optional; auto if omitted)
+  --backend direct|worker   vot backend (optional)
+  --help                    show this help
+
+Any other arguments are passed to mpv.
+Environment:
+  VOT_CLI   path/name of vot-cli-go binary (default: vot)
+EOF
+}
+
+validate_url() {
+	local url="$1"
+	if [[ "$url" =~ ^https?:// ]]; then
+		return 0
+	fi
+	echo "error: '$url' is not a valid http(s) URL" >&2
+	return 1
+}
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+	-h | --help)
+		usage
+		exit 0
+		;;
+	--voice-style=*)
+		VOICE_STYLE="${1#*=}"
+		shift
+		;;
+	--voice-style)
+		[[ $# -ge 2 ]] || { echo "error: --voice-style needs a value" >&2; exit 1; }
+		VOICE_STYLE="$2"
+		shift 2
+		;;
+	--response-lang=*)
+		RESPONSE_LANG="${1#*=}"
+		shift
+		;;
+	--response-lang)
+		[[ $# -ge 2 ]] || { echo "error: --response-lang needs a value" >&2; exit 1; }
+		RESPONSE_LANG="$2"
+		shift 2
+		;;
+	--request-lang=*)
+		REQUEST_LANG="${1#*=}"
+		shift
+		;;
+	--request-lang)
+		[[ $# -ge 2 ]] || { echo "error: --request-lang needs a value" >&2; exit 1; }
+		REQUEST_LANG="$2"
+		shift 2
+		;;
+	--backend=*)
+		BACKEND="${1#*=}"
+		shift
+		;;
+	--backend)
+		[[ $# -ge 2 ]] || { echo "error: --backend needs a value" >&2; exit 1; }
+		BACKEND="$2"
+		shift 2
+		;;
+	--url=*)
+		URL_VALUE="${1#*=}"
+		validate_url "$URL_VALUE" || exit 1
+		shift
+		;;
+	--url)
+		[[ $# -ge 2 ]] || { echo "error: --url needs a value" >&2; exit 1; }
+		validate_url "$2" || exit 1
+		URL_VALUE="$2"
+		shift 2
+		;;
+	--)
+		shift
+		MPV_ARGS+=("$@")
+		break
+		;;
+	*)
+		MPV_ARGS+=("$1")
+		shift
+		;;
+	esac
+done
+
+if [[ -z "${URL_VALUE}" ]]; then
+	echo "error: --url is required" >&2
+	usage >&2
+	exit 1
+fi
+
+case "$VOICE_STYLE" in
+live | tts) ;;
+*)
+	echo "error: --voice-style must be 'live' or 'tts'" >&2
+	exit 1
+	;;
+esac
+
+if ! command -v "$VOT_CLI" >/dev/null 2>&1; then
+	echo "error: vot CLI not found (looked for '$VOT_CLI'). Install vot-cli-go or set VOT_CLI." >&2
+	exit 1
+fi
+if ! command -v mpv >/dev/null 2>&1; then
+	echo "error: mpv not found in PATH" >&2
+	exit 1
+fi
+
+VIDEO_URL="${URL_VALUE%%#*}"
+
+VOT_ARGS=(--silent translate --voice-style="$VOICE_STYLE" --response-lang="$RESPONSE_LANG")
+if [[ -n "$REQUEST_LANG" ]]; then
+	VOT_ARGS+=(--request-lang="$REQUEST_LANG")
+fi
+if [[ -n "$BACKEND" ]]; then
+	VOT_ARGS+=(--backend="$BACKEND")
+fi
+VOT_ARGS+=("$VIDEO_URL")
+
+echo "vot2mpv: translating via $VOT_CLI ..." >&2
+if ! VOT_AUDIO="$("$VOT_CLI" "${VOT_ARGS[@]}")"; then
+	echo "error: $VOT_CLI failed" >&2
+	exit 1
+fi
+VOT_AUDIO="$(printf '%s\n' "$VOT_AUDIO" | sed -n '/^https\{0,1\}:\/\//p' | head -n1)"
+
+if [[ ! "$VOT_AUDIO" =~ ^https?:// ]]; then
+	echo "error: did not receive an audio URL from $VOT_CLI" >&2
+	exit 1
+fi
+
+echo "vot2mpv: audio=$VOT_AUDIO" >&2
+exec mpv "$VIDEO_URL" \
+	--external-file="$VOT_AUDIO" \
+	--lavfi-complex='[aid1]volume=0.5[vol1];[aid2]volume=3dB[vol2];[vol1][vol2]amix[ao]' \
+	"${MPV_ARGS[@]}"

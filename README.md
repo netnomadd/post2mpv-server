@@ -7,7 +7,7 @@ HTTP-сервер для управления воспроизведением �
 - [mpv](https://mpv.io/)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — для действия `download`
 - [peerflix](https://github.com/mafintosh/peerflix) — для торрентов
-- [vot-cli-live](https://github.com/fantomcheg/vot-cli-live) — для действия `translate` (скрипт `vot` в репозитории, требует `vot-cli-live`)
+- [vot-cli-go](https://github.com/netnomadd/vot-cli-go) — для действия `translate` (скрипт `vot2mpv` в репозитории вызывает бинарь `vot`)
 
 ## Сборка
 
@@ -63,10 +63,10 @@ POST2MPV_MPV_LOG=0
 ## Установка как пользовательский сервис systemd
 
 ```bash
-# Установить бинарник и скрипт vot
+# Установить бинарник и скрипт vot2mpv
 cp post2mpv ~/.local/bin/post2mpv
-cp vot ~/.local/bin/vot
-chmod +x ~/.local/bin/vot
+cp vot2mpv ~/.local/bin/vot2mpv
+chmod +x ~/.local/bin/vot2mpv
 
 # Создать директорию для конфига
 mkdir -p ~/.config/post2mpv
@@ -171,7 +171,7 @@ X-POST2MPV-TOKEN: <token>   # если токен задан
 |--------|---------|-----------|
 | `play` | `mpv` | Для magnet/`.torrent` — `peerflix` |
 | `download` | `yt-dlp` | |
-| `translate` | `vot` | |
+| `translate` | `vot2mpv` | требует `vot` из vot-cli-go в PATH |
 
 ### Примеры
 
